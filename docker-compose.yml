@@ -15,5 +15,8 @@ services:
       - db
     env_file:
       - ./.env
+    volumes:
+      - ./:/usr/app
+    command: python bot.py
     extra_hosts:
       - "host.docker.internal:host-gateway"

@@ -16,18 +16,19 @@ REMOVAL_INTERVAL = os.getenv("ROW_REMOVAL_INTERVAL")
 
 # Predefined text to send, you can change its values to customize your own bot
 TEXT_MESSAGES = {
-    'start': 'Welcome to Suggestions Bot 👋 \n\nPlease, send your message and we will process your request.',
-    'message_template': '<i>Message from: <b>@{0}</b>.</i>\n\n{1}<b>id: {2}</b>',
-    'is_banned': '❌ User is banned!', 'has_banned': '✅ User has been successfully banned!',
-    'already_banned': '❌ User is already banned!', 'has_unbanned': '✅ User has been successfully un-banned!',
-    'not_banned': '❌ There is no such user in the ban list!',
-    'user_banned': '🚫 You cannot send messages to this bot!',
-    'user_unbanned': '🥳 You have proven your innocence, and now you can write to this bot again!',
-    'user_reason_banned': '🚫 You cannot send messages to this bot due to the reason: <i>{}</i>.',
-    'pending': 'Thank you for your request! We are already into processing it.',
+    'start': 'Добро пожаловать 👋 \n\n Напиши свое сообщение здесь и автор рассмотрит его.',
+    'message_template': '{text}\n\n👤 <a href="tg://user?id={user_id}">{full_name}</a>',
+    'is_banned': '❌ Пользователь забанен!',
+    'already_banned': '❌ Пользователь уже забанен!',
+    'not_banned': '❌ Такого пользователя в бан листе нет!',
+    'user_banned': '🚫 Ты не можешь отправлять сообщения в этот бот!',
+    'user_unbanned': '🥳 Тебя помиловали и ты снова сможешь писать сообщения!',
+    'user_reason_banned': '🚫 Ты не можешь писать сообщения сюда по следующей причине: <i>{}</i>.',
+    'has_banned': '✅ Пользователь был успешно забанен!',
+    'has_unbanned': '✅ Пользователь успешно был разбанен!',
+    'pending': 'Получили! Модерация уже просматривает твое сообщение.',
     'unsupported_format': '❌ Format of your message is not supported and it will not be forwarded.',
     'message_not_found': '❌ It looks like your message was sent more that a day ago. Message to edit was not found!',
-    'message_was_not_edited': '❌ Unfortunately you cannot edit images/videos themselves.'
-                              'Please, send a new message.',
+    'message_was_not_edited': '❌ Unfortunately you cannot edit images/videos themselves.' 'Please, send a new message.',
     'reply_error': '❌ Please, reply with /ban or /unban only on forwarded from user messages!'
 }
