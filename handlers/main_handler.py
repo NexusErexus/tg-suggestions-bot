@@ -1,5 +1,3 @@
-import logging
-
 import aiogram.utils.exceptions
 from aiogram import types, Dispatcher
 from aiogram.dispatcher import filters
@@ -8,20 +6,12 @@ from datetime import datetime
 from config import *
 from create_bot import bot, cursor, base
 from handlers.admin_handler import is_banned
-
-
-# Function to get user id from message more easy
-def get_user_id(message: types.Message):
-    if message.reply_to_message.text:
-        user_id = message.reply_to_message.text.split()[-1].replace("*", "")
-    else:
-        user_id = message.reply_to_message.caption.split()[-1].replace("*", "")
-    return user_id
+from handlers.keyboards import post_moderation_keyboard
 
 
 # Function which answers to banned users based on availability of ban reason
 async def answer_banned(user_id):
-    cursor.execute(f'SELECT ban_reason FROM ban_id WHERE user_id = {user_id}')
+    cursor.execute('SELECT ban_reason FROM ban_id WHERE user_id = %s', (user_id,))
     reason = cursor.fetchone()[0]
     if reason is None:
         await bot.send_message(chat_id=user_id, text=TEXT_MESSAGES['user_banned'])
@@ -35,114 +25,106 @@ async def starting(message: types.Message):
     await message.answer(TEXT_MESSAGES['start'])
 
 
-# Function which allows support team to reply on users' messages with any type of content
 async def reply_to_user(message: types.Message):
-    # Filtering basic replies from answers to bot and commands
-    if not message.reply_to_message.from_user.is_bot or message.is_command():
+    if not message.reply_to_message or not message.reply_to_message.from_user.is_bot:
         return
 
-    user_id = get_user_id(message)
-    # Checking if user was banned earlier
+    cursor.execute(
+        "SELECT tg_user_id FROM message_id WHERE bot_message_id = %s",
+        (message.reply_to_message.message_id,)
+    )
+    row = cursor.fetchone()
+
+    if not row:
+        await message.reply("❌ Не удалось определить пользователя")
+        return
+
+    user_id = row[0]
+
     if is_banned(user_id):
         await message.reply(TEXT_MESSAGES['is_banned'])
         return
 
-    bot_message = await bot.copy_message(chat_id=user_id, from_chat_id=message.chat.id,
-                                         message_id=message.message_id)  # Sending reply to user
-    utc_time = datetime.utcnow()
-    date_utc = utc_time.strftime('%Y-%m-%d %H:%M:%S')
-    # Inserting user_message_id and bot_message_id to implement message editing option on both sides
-    # Time is needed to delete this row after some time passes
-    cursor.execute(f"INSERT INTO message_id VALUES (%s, %s, %s)", (message.message_id,
-                                                                   bot_message.message_id, date_utc))
-    base.commit()
-
-async def forward_handler(message: types.Message):
-    user = message.from_user
-    user_id = user.id
-    full_name = " ".join(filter(None, [user.first_name, user.last_name]))
-
-    # Checking ban
-    if is_banned(user_id):
-        await answer_banned(user_id)
-        return
-
-    await message.answer(TEXT_MESSAGES['pending'])
-
-    # message text
-    text = message.text or message.caption or ""
-
-    text_user = TEXT_MESSAGES['message_template'].format(
-        text=text,
-        full_name=full_name,
-        user_id=user_id
+    bot_message = await bot.copy_message(
+        chat_id=user_id,
+        from_chat_id=message.chat.id,
+        message_id=message.message_id
     )
-
-    # if text message and not command
-    if message.text and not message.is_command():
-        bot_message = await bot.send_message(
-            chat_id=CHAT_ID,
-            text=text_user,
-            parse_mode="HTML"
-        )
-
-    # stickers cannot be sended
-    elif message.sticker:
-        await message.reply(TEXT_MESSAGES['unsupported_format'])
-        return
-
-    # sending photos, videos, circles and voices
-    else:
-        bot_message = await bot.copy_message(
-            chat_id=CHAT_ID,
-            from_chat_id=user_id,
-            message_id=message.message_id,
-            caption=text_user if text else None,
-            parse_mode="HTML"
-        )
 
     utc_time = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
-
     cursor.execute(
-        "INSERT INTO message_id VALUES (%s, %s, %s)",
-        (message.message_id, bot_message.message_id, utc_time)
+        """
+        INSERT INTO message_id (user_message_id, bot_message_id, datatime, tg_user_id)
+        VALUES (%s, %s, %s, %s)
+        """,
+        (message.message_id, bot_message.message_id, utc_time, user_id)
     )
     base.commit()
 
 
 
-# # Function, which forwards user's messages to chat
-# async def forward_handler(message: types.Message):
-#     user_id = message.from_user.id
-#     # Checking if user is banned
-#     if is_banned(user_id):
-#         await answer_banned(user_id)
-#         return
+async def forward_handler(message: types.Message):
+    try:
 
-#     # Defining type of the message
-#     if message.text and not message.is_command():
-#         await message.answer(TEXT_MESSAGES['pending'])
-#         text_user = TEXT_MESSAGES['message_template'].format(message.from_user.username, message.parse_entities() + '\n\n',
-#                                                              user_id)
-#         bot_message = await bot.send_message(chat_id=CHAT_ID, parse_mode="HTML", text=text_user, entities=message.entities)
-#     # Stickers are not allowed from user's side because he might be not banned using reply
-#     elif message.sticker:
-#         await message.reply(TEXT_MESSAGES['unsupported_format'])
-#         return
-#     else:
-#         caption = TEXT_MESSAGES['message_template'].format(message.from_user.username,
-#                                                            message.parse_entities() + '\n\n' if message.caption is not None
-#                                                            else '', user_id)
-#         bot_message = await bot.copy_message(chat_id=CHAT_ID, from_chat_id=user_id, message_id=message.message_id,
-#                                              caption=caption, parse_mode='HTML')
+        user = message.from_user
+        user_id = user.id
+        full_name = " ".join(filter(None, [user.first_name, user.last_name]))
 
-#     utc_time = datetime.utcnow()
-#     date_utc = utc_time.strftime('%Y-%m-%d %H:%M:%S')
-#     # Inserting user_message_id and bot_message_id to implement message editing option on both sides
-#     # Time is needed to delete this row after some time passes
-#     cursor.execute(f"INSERT INTO message_id VALUES (%s, %s, %s)", (message.message_id,
-#                                                                    bot_message.message_id, date_utc))
-#     base.commit()
+        if is_banned(user_id):
+            await answer_banned(user_id)
+            return
+
+        await message.answer(TEXT_MESSAGES['pending'])
+
+        text = message.text or message.caption or ""
+
+        text_user = TEXT_MESSAGES['message_template'].format(
+            text=text,
+            full_name=full_name
+        )
+
+        # Text
+        if message.text and not message.is_command():
+            bot_message = await bot.send_message(
+                CHAT_ID,
+                text_user,
+                parse_mode="HTML",
+                reply_markup=post_moderation_keyboard(user_id)
+            )
+
+        # Sticker is not allowed
+        elif message.sticker:
+            await message.reply(TEXT_MESSAGES['unsupported_format'])
+            return
+
+        # Media
+        else:
+            bot_message = await bot.copy_message(
+                CHAT_ID,
+                message.chat.id,
+                message.message_id,
+                caption=text_user if text else f"👤 <code>{full_name}</code>",
+                parse_mode="HTML",
+                reply_markup=post_moderation_keyboard(user_id)
+            )
+
+        # Save db
+
+        utc_time = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+
+        cursor.execute(
+            """
+            INSERT INTO message_id
+            (user_message_id, bot_message_id, datatime, tg_user_id)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (message.message_id, bot_message.message_id, utc_time, user_id)
+        )
+
+        base.commit()
+
+    except Exception as e:
+        await bot.send_message(CHAT_ID, f"FATAL forward_handler error:\n{e}")
 
 
 # Function which is responsible for editing responses in the chat and edit copied message from bot in private chat
@@ -219,10 +201,13 @@ def setup_dispatcher(dp: Dispatcher):
     dp.register_message_handler(starting, commands=["start"])    # Handler for '/start' command
     dp.register_message_handler(filters.IsReplyFilter(True), filters.IDFilter(chat_id=CHAT_ID), reply_to_user,
                                 is_reply=True, content_types=['any'])    # Handler for replying to user
+    
     # Handler for forwarding users' messages to chat
     dp.register_message_handler(forward_handler, chat_type='private', content_types=['any'])
+
     # Handler for editing chat messages
     dp.register_edited_message_handler(filters.IsReplyFilter(True), filters.IDFilter(chat_id=CHAT_ID),
                                        chat_edited_messages, is_reply=True, content_types=['any'])
+
     # Handler for editing users' messages
     dp.register_edited_message_handler(private_edited_messages, content_types=['any'], chat_type='private')

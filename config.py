@@ -1,10 +1,13 @@
 import os
 
 # Bot Data
-TOKEN = os.getenv("TELEGRAM_TOKEN") # Get your bot token using https://t.me/BotFather
+TOKEN = os.getenv("TELEGRAM_TOKEN") # Bot token
 
 # Support Chat
-CHAT_ID = os.getenv("CHAT_ID") # To find out your channels ID use: https://t.me/getidsbot
+CHAT_ID = os.getenv("CHAT_ID") # Chat group id
+
+# Publication Channel
+CHANNEL_ID = os.getenv("CHANNEL_ID") # Channel where posts are published via button
 
 # Database Data
 HOSTNAME = os.getenv("POSTGRES_HOST")
@@ -17,7 +20,7 @@ REMOVAL_INTERVAL = os.getenv("ROW_REMOVAL_INTERVAL")
 # Predefined text to send, you can change its values to customize your own bot
 TEXT_MESSAGES = {
     'start': 'Добро пожаловать 👋 \n\n Напиши свое сообщение здесь и автор рассмотрит его.',
-    'message_template': '{text}\n\n👤 <a href="tg://user?id={user_id}">{full_name}</a>',
+    'message_template': '{text}\n\n👤 <code>{full_name}</code>',
     'is_banned': '❌ Пользователь забанен!',
     'already_banned': '❌ Пользователь уже забанен!',
     'not_banned': '❌ Такого пользователя в бан листе нет!',
