@@ -10,7 +10,7 @@ bot = Bot(TOKEN)
 dp = Dispatcher(bot)
 db_user = USERNAME
 
-# Creating and accessing database for banning/unbanning users and editing messages
+# Creating and accessing database for banning/unbanning users and editing messages, creating routine cleaner function
 base = psycopg2.connect(host=HOSTNAME, dbname=DATABASE, user=USERNAME, password=DB_PASS, port=PORT_ID)
 cursor = base.cursor(cursor_factory=psycopg2.extras.DictCursor)
 try:
@@ -22,6 +22,21 @@ try:
         datatime TIMESTAMP,
         tg_user_id BIGINT
     )
+    """)
+
+    # Migration: добавляем full_name если его ещё нет
+    cursor.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                           WHERE table_name = 'ban_id' AND column_name = 'full_name') THEN
+                ALTER TABLE ban_id ADD COLUMN full_name text;
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                           WHERE table_name = 'message_id' AND column_name = 'full_name') THEN
+                ALTER TABLE message_id ADD COLUMN full_name text;
+            END IF;
+        END $$;
     """)
 
     cursor.execute(f"""
