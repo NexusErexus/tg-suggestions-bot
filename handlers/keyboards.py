@@ -23,13 +23,12 @@ def post_moderation_keyboard(user_id: int) -> InlineKeyboardMarkup:
                 callback_data="publish"
             ),
         ],
-        # [
-        #     InlineKeyboardButton(
-        #         text="👤 Профиль",
-        #         callback_data="profile",
-        #         url=f"tg://user?id={user_id}"
-        #     )
-        # ]
+        [
+            InlineKeyboardButton(
+                text="👤 Профиль",
+                callback_data=f"profile:{user_id}"
+            ),
+        ],
     ])
 
 # Подтверждение /clear
@@ -78,6 +77,8 @@ def unban_confirm_keyboard(user_id: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="❌ Назад", callback_data="banlist_page:0"),
         ]
     ])
+
+
 
 # Меню для админов в группе (ReplyKeyboard)
 def admin_menu_keyboard() -> ReplyKeyboardMarkup:

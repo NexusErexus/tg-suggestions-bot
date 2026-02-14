@@ -6,7 +6,7 @@ from aiogram.dispatcher import filters
 from config import *
 
 
-ADMIN_IDS = {550255122}
+ADMIN_IDS = {} # id admin here
 BANLIST_PAGE_SIZE = 10
 
 
@@ -205,6 +205,33 @@ async def callback_publish(callback: types.CallbackQuery):
         await callback.answer(f"❌ Ошибка публикации: {e}", show_alert=True)
 
 
+# 👤 Профиль пользователя
+async def callback_profile(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ У вас нет прав", show_alert=True)
+        return
+
+    user_id = int(callback.data.split(":")[1])
+
+    try:
+        # Пытаемся получить информацию о пользователе
+        user = await bot.get_chat(user_id)
+        
+        # Если получилось — профиль открыт, показываем ссылку
+        username = f"@{user.username}" if user.username else f"ID: {user_id}"
+        full_name = " ".join(filter(None, [user.first_name, user.last_name]))
+        
+        await callback.answer(
+            f"👤 {full_name}\n{username}\n\nПерейти: tg://user?id={user_id}",
+            show_alert=True
+        )
+    except Exception as e:
+        # Если ошибка — профиль закрыт или пользователь удалил аккаунт
+        await callback.answer(
+            "❌ Не удалось получить профиль пользователя.\nВозможно профиль закрыт или аккаунт удалён.",
+            show_alert=True
+        )
+
 # ─── /clear ──────────────────────────────────────────────────────
 
 async def cmd_clear(message: types.Message):
@@ -223,32 +250,33 @@ async def cmd_clear(message: types.Message):
     except Exception:
         pass
 
-
 async def callback_clear_confirm(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
         await callback.answer("⛔ У вас нет прав", show_alert=True)
         return
 
-    cursor.execute("SELECT bot_message_id FROM message_id")
-    rows = cursor.fetchall()
+    # Берём ID системного сообщения
+    cursor.execute("SELECT message_id FROM system_message LIMIT 1")
+    system_row = cursor.fetchone()
+    system_msg_id = system_row[0] if system_row else None
 
-    if not rows:
-        await callback.message.edit_text("✅ Постов для удаления не было.")
-        return
+    # Удаляем все сообщения в диапазоне (последние 50000)
+    max_msg_id = callback.message.message_id
+    min_msg_id = max(1, max_msg_id - 50000)  # Последние 50000 сообщений
 
     deleted = 0
-    for row in rows:
+    for msg_id in range(min_msg_id, max_msg_id + 1):
+        # Пропускаем системное сообщение
+        if system_msg_id and msg_id == system_msg_id:
+            continue
+        
         try:
-            await bot.delete_message(chat_id=callback.message.chat.id, message_id=row[0])
+            await bot.delete_message(chat_id=callback.message.chat.id, message_id=msg_id)
             deleted += 1
         except Exception:
-            pass
+            pass  # Сообщение уже удалено или недоступно
 
-    cursor.execute("DELETE FROM message_id")
-    base.commit()
-
-    await callback.message.edit_text(f"✅ Удалено {deleted} постов.")
-
+    await callback.message.edit_text(f"✅ Удалено {deleted} сообщений.")
 
 async def callback_clear_cancel(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
@@ -380,14 +408,14 @@ async def callback_unban_confirm(callback: types.CallbackQuery):
 
 async def cmd_help(message: types.Message):
     # Если админ пишет в группе предложки — отправляем с клавиатурой
-    # if message.chat.id == int(CHAT_ID) and is_admin(message.from_user.id):
-    #     await message.answer(
-    #         TEXT_MESSAGES['help'],
-    #         parse_mode="HTML",
-    #         reply_markup=admin_menu_keyboard()
-    #     )
-    # else:
-    await message.answer(TEXT_MESSAGES['help'], parse_mode="HTML")
+    if message.chat.id == int(CHAT_ID) and is_admin(message.from_user.id):
+        await message.answer(
+            TEXT_MESSAGES['help'],
+            parse_mode="HTML",
+            reply_markup=admin_menu_keyboard()
+        )
+    else:
+        await message.answer(TEXT_MESSAGES['help'], parse_mode="HTML")
 
 
 # ─── Обработчики кнопок ReplyKeyboard ────────────────────────────
@@ -418,6 +446,8 @@ def setup_dispatcher(dp: Dispatcher):
     dp.register_callback_query_handler(callback_delete_post, lambda c: c.data == "delete_post")
     dp.register_callback_query_handler(callback_delete_all, lambda c: c.data and c.data.startswith("delete_all:"))
     dp.register_callback_query_handler(callback_publish, lambda c: c.data == "publish")
+    dp.register_callback_query_handler(callback_profile, lambda c: c.data and c.data.startswith("profile:"))
+
 
     # Callback handlers для /clear
     dp.register_callback_query_handler(callback_clear_confirm, lambda c: c.data == "clear_confirm")
@@ -430,7 +460,8 @@ def setup_dispatcher(dp: Dispatcher):
     dp.register_callback_query_handler(callback_unban_confirm, lambda c: c.data and c.data.startswith("unban_confirm:"))
 
     # Command handlers
-    dp.register_message_handler(filters.IDFilter(chat_id=CHAT_ID), cmd_help, commands=["help"])
+    dp.register_message_handler(cmd_help, commands=["help"])  # Доступна везде
+    #dp.register_message_handler(filters.IDFilter(chat_id=CHAT_ID), cmd_start_group, commands=["start"])  # /start в группе
     dp.register_message_handler(filters.IDFilter(chat_id=CHAT_ID), cmd_clear, commands=["clear"])
     dp.register_message_handler(filters.IDFilter(chat_id=CHAT_ID), cmd_banlist, commands=["banlist"])
     dp.register_message_handler(filters.IsReplyFilter(True), filters.IDFilter(chat_id=CHAT_ID), ban_user,
