@@ -34,14 +34,14 @@ def check_replied(reply: types.Message) -> bool:
     return True
 
 
-def get_user_info(bot_message_id: int) -> tuple[int, str | None] | None:
-    """Возвращает (tg_user_id, full_name) по bot_message_id, или None если не найдено."""
+def get_user_info(bot_message_id: int) -> tuple[int, str | None, str | None, str | None] | None:
+    """Возвращает (tg_user_id, full_name, username, source) по bot_message_id, или None если не найдено."""
     cursor.execute(
-        "SELECT tg_user_id, full_name FROM message_id WHERE bot_message_id = %s",
+        "SELECT tg_user_id, full_name, username, source FROM message_id WHERE bot_message_id = %s",
         (bot_message_id,)
     )
     row = cursor.fetchone()
-    return (row[0], row[1]) if row else None
+    return (row[0], row[1], row[2], row[3]) if row else None
 
 
 # Function to ban user from writing to this bot using SQL
@@ -58,7 +58,7 @@ async def ban_user(message: types.Message):
     if not info:
         await message.reply("❌ Не удалось определить пользователя")
         return
-    user_id, full_name = info
+    user_id, full_name, _, _ = info
 
     try:
         reason = message.text.split(' ', maxsplit=1)[1]
@@ -96,7 +96,7 @@ async def unban_user(message: types.Message):
     if not info:
         await message.reply("❌ Не удалось определить пользователя")
         return
-    user_id, _ = info
+    user_id, _, _, _ = info
 
     if is_banned(user_id):
         cursor.execute("DELETE FROM ban_id WHERE user_id = %s", (user_id,))
@@ -145,10 +145,32 @@ async def callback_delete_post(callback: types.CallbackQuery):
         await callback.answer("⛔ У вас нет прав", show_alert=True)
         return
 
+    keyboard_msg_id = callback.message.message_id
+    chat_id = callback.message.chat.id
+
+    cursor.execute(
+        "SELECT album_message_id FROM media_group_messages WHERE keyboard_message_id = %s",
+        (keyboard_msg_id,)
+    )
+    album_rows = cursor.fetchall()
+
+    for row in album_rows:
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=row[0])
+        except Exception:
+            pass
+
     try:
-        await bot.delete_message(chat_id=callback.message.chat.id, message_id=callback.message.message_id)
+        await bot.delete_message(chat_id=chat_id, message_id=keyboard_msg_id)
     except Exception:
         await callback.answer("❌ Не удалось удалить сообщение", show_alert=True)
+
+    if album_rows:
+        cursor.execute(
+            "DELETE FROM media_group_messages WHERE keyboard_message_id = %s",
+            (keyboard_msg_id,)
+        )
+        base.commit()
 
 
 # 🗑️ Удалить все посты автора в чате
@@ -158,6 +180,7 @@ async def callback_delete_all(callback: types.CallbackQuery):
         return
 
     user_id = int(callback.data.split(":")[1])
+    chat_id = callback.message.chat.id
 
     cursor.execute(
         "SELECT bot_message_id FROM message_id WHERE tg_user_id = %s",
@@ -171,13 +194,30 @@ async def callback_delete_all(callback: types.CallbackQuery):
 
     deleted = 0
     for row in rows:
+        keyboard_msg_id = row[0]
+
+        cursor.execute(
+            "SELECT album_message_id FROM media_group_messages WHERE keyboard_message_id = %s",
+            (keyboard_msg_id,)
+        )
+        album_rows = cursor.fetchall()
+        for album_row in album_rows:
+            try:
+                await bot.delete_message(chat_id=chat_id, message_id=album_row[0])
+                deleted += 1
+            except Exception:
+                pass
+
         try:
-            await bot.delete_message(chat_id=callback.message.chat.id, message_id=row[0])
+            await bot.delete_message(chat_id=chat_id, message_id=keyboard_msg_id)
             deleted += 1
         except Exception:
-            pass  # Сообщение уже удалено или недоступно
+            pass
 
-    # Удаляем записи из БД для этого пользователя
+    cursor.execute(
+        "DELETE FROM media_group_messages WHERE keyboard_message_id IN (SELECT bot_message_id FROM message_id WHERE tg_user_id = %s)",
+        (user_id,)
+    )
     cursor.execute("DELETE FROM message_id WHERE tg_user_id = %s", (user_id,))
     base.commit()
 
@@ -194,43 +234,60 @@ async def callback_publish(callback: types.CallbackQuery):
         await callback.answer("❌ Канал не настроен (CHANNEL_ID)", show_alert=True)
         return
 
+    keyboard_msg_id = callback.message.message_id
+    chat_id = callback.message.chat.id
+
+    cursor.execute(
+        "SELECT file_id, media_type, caption FROM media_group_messages WHERE keyboard_message_id = %s ORDER BY album_message_id",
+        (keyboard_msg_id,)
+    )
+    album_rows = cursor.fetchall()
+
+    # Берём имя автора и источник из БД
+    info = get_user_info(keyboard_msg_id)
+    if info:
+        user_id, full_name, username, source = info
+        author_line = f"\n\n👤 <code>{full_name}</code>" if full_name else ""
+        if source:
+            author_line += f"\n\n📰 Источник: <b>{source}</b>"
+    else:
+        author_line = ""
+
     try:
-        await bot.copy_message(
-            chat_id=CHANNEL_ID,
-            from_chat_id=callback.message.chat.id,
-            message_id=callback.message.message_id
-        )
+        if album_rows:
+            # Собираем медиагруппу из сохранённых file_id
+            media = []
+            for i, row in enumerate(album_rows):
+                file_id, media_type, caption = row[0], row[1], row[2] or ""
+                # Добавляем автора к подписи первого медиа
+                full_caption = (caption + author_line) if i == 0 else caption
+                if media_type == "photo":
+                    media.append(types.InputMediaPhoto(
+                        media=file_id,
+                        caption=full_caption if i == 0 else "",
+                        parse_mode="HTML" if i == 0 else None
+                    ))
+                elif media_type == "video":
+                    media.append(types.InputMediaVideo(
+                        media=file_id,
+                        caption=full_caption if i == 0 else "",
+                        parse_mode="HTML" if i == 0 else None
+                    ))
+
+            if media:
+                await bot.send_media_group(chat_id=CHANNEL_ID, media=media)
+        else:
+            # Одиночный пост — подпись уже содержит имя автора, убираем кнопки модерации
+            await bot.copy_message(
+                chat_id=CHANNEL_ID,
+                from_chat_id=chat_id,
+                message_id=keyboard_msg_id,
+                reply_markup=types.InlineKeyboardMarkup()
+            )
         await callback.answer("✅ Пост опубликован в канал", show_alert=True)
     except Exception as e:
         await callback.answer(f"❌ Ошибка публикации: {e}", show_alert=True)
 
-
-# 👤 Профиль пользователя
-async def callback_profile(callback: types.CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ У вас нет прав", show_alert=True)
-        return
-
-    user_id = int(callback.data.split(":")[1])
-
-    try:
-        # Пытаемся получить информацию о пользователе
-        user = await bot.get_chat(user_id)
-        
-        # Если получилось — профиль открыт, показываем ссылку
-        username = f"@{user.username}" if user.username else f"ID: {user_id}"
-        full_name = " ".join(filter(None, [user.first_name, user.last_name]))
-        
-        await callback.answer(
-            f"👤 {full_name}\n{username}\n\nПерейти: tg://user?id={user_id}",
-            show_alert=True
-        )
-    except Exception as e:
-        # Если ошибка — профиль закрыт или пользователь удалил аккаунт
-        await callback.answer(
-            "❌ Не удалось получить профиль пользователя.\nВозможно профиль закрыт или аккаунт удалён.",
-            show_alert=True
-        )
 
 # ─── /clear ──────────────────────────────────────────────────────
 
@@ -255,28 +312,42 @@ async def callback_clear_confirm(callback: types.CallbackQuery):
         await callback.answer("⛔ У вас нет прав", show_alert=True)
         return
 
+    confirm_msg_id = callback.message.message_id  # ID сообщения с кнопками — не удаляем его
+
     # Берём ID системного сообщения
     cursor.execute("SELECT message_id FROM system_message LIMIT 1")
     system_row = cursor.fetchone()
     system_msg_id = system_row[0] if system_row else None
 
     # Удаляем все сообщения в диапазоне (последние 50000)
-    max_msg_id = callback.message.message_id
-    min_msg_id = max(1, max_msg_id - 50000)  # Последние 50000 сообщений
+    max_msg_id = confirm_msg_id
+    min_msg_id = max(1, max_msg_id - 50000)
 
     deleted = 0
     for msg_id in range(min_msg_id, max_msg_id + 1):
-        # Пропускаем системное сообщение
+        # Пропускаем системное сообщение и само сообщение с кнопкой подтверждения
         if system_msg_id and msg_id == system_msg_id:
             continue
-        
+        if msg_id == confirm_msg_id:
+            continue
+
         try:
             await bot.delete_message(chat_id=callback.message.chat.id, message_id=msg_id)
             deleted += 1
         except Exception:
-            pass  # Сообщение уже удалено или недоступно
+            pass
 
+    # Редактируем сообщение с кнопкой — оно ещё живо
     await callback.message.edit_text(f"✅ Удалено {deleted} сообщений.")
+
+    # Восстанавливаем клавиатуру
+    await bot.send_message(
+        chat_id=callback.message.chat.id,
+        text="✅ Бот работает исправно",
+        reply_markup=admin_menu_keyboard()
+    )
+
+
 
 async def callback_clear_cancel(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
@@ -404,38 +475,80 @@ async def callback_unban_confirm(callback: types.CallbackQuery):
         )
 
 
-# ─── /help ────────────────────────────────────────────────────────
 
 async def cmd_help(message: types.Message):
     # Если админ пишет в группе предложки — отправляем с клавиатурой
     if message.chat.id == int(CHAT_ID) and is_admin(message.from_user.id):
-        await message.answer(
-            TEXT_MESSAGES['help'],
-            parse_mode="HTML",
-            reply_markup=admin_menu_keyboard()
-        )
-    else:
         await message.answer(TEXT_MESSAGES['help'], parse_mode="HTML")
 
+async def cmd_start(message: types.Message):
+    if message.chat.type != 'private':
+        if is_admin(message.from_user.id):
+            await message.answer(
+                TEXT_MESSAGES['start_admin'],
+                parse_mode="HTML",
+                reply_markup=admin_menu_keyboard()
+            )
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        
+
+    
+# ─── /profile ─────────────────────────────────────────────────────
+
+async def cmd_profile(message: types.Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    if not check_replied(message.reply_to_message):
+        await message.reply(TEXT_MESSAGES['reply_error'])
+        return
+
+    bot_message_id = message.reply_to_message.message_id
+    info = get_user_info(bot_message_id)
+    if not info:
+        await message.reply("❌ Не удалось определить пользователя")
+        return
+
+    user_id, full_name, username, _ = info
+
+    # Формируем имя для ссылки
+    display_name = full_name or username or str(user_id)
+
+    # Inline mention через HTML — кликабельная ссылка на профиль прямо в тексте
+    mention = f'<a href="tg://user?id={user_id}">{display_name}</a>'
+
+    lines = [f"👤 {mention}\n"]
+    if username:
+        lines.append(f"Username: @{username}")
+    lines.append(f"ID: <code>{user_id}</code>")
+    text = "\n".join(lines)
+
+    await message.reply(text, parse_mode="HTML")
+
+    # Удаляем команду из чата
+    try:
+        await message.delete()
+    except Exception:
+        pass
 
 # ─── Обработчики кнопок ReplyKeyboard ────────────────────────────
 
 async def button_clear(message: types.Message):
-    """Обработчик кнопки 'Очистить предложку' — вызывает cmd_clear"""
     if not is_admin(message.from_user.id):
         return
     await cmd_clear(message)
 
 
 async def button_banlist(message: types.Message):
-    """Обработчик кнопки 'Банлист' — вызывает cmd_banlist"""
     if not is_admin(message.from_user.id):
         return
     await cmd_banlist(message)
 
 
 async def button_help(message: types.Message):
-    """Обработчик кнопки 'Помощь' — вызывает cmd_help"""
     await cmd_help(message)
 
 
@@ -446,8 +559,6 @@ def setup_dispatcher(dp: Dispatcher):
     dp.register_callback_query_handler(callback_delete_post, lambda c: c.data == "delete_post")
     dp.register_callback_query_handler(callback_delete_all, lambda c: c.data and c.data.startswith("delete_all:"))
     dp.register_callback_query_handler(callback_publish, lambda c: c.data == "publish")
-    dp.register_callback_query_handler(callback_profile, lambda c: c.data and c.data.startswith("profile:"))
-
 
     # Callback handlers для /clear
     dp.register_callback_query_handler(callback_clear_confirm, lambda c: c.data == "clear_confirm")
@@ -459,29 +570,22 @@ def setup_dispatcher(dp: Dispatcher):
     dp.register_callback_query_handler(callback_banlist_user, lambda c: c.data and c.data.startswith("banlist_user:"))
     dp.register_callback_query_handler(callback_unban_confirm, lambda c: c.data and c.data.startswith("unban_confirm:"))
 
-    # Command handlers
-    dp.register_message_handler(cmd_help, commands=["help"])  # Доступна везде
-    #dp.register_message_handler(filters.IDFilter(chat_id=CHAT_ID), cmd_start_group, commands=["start"])  # /start в группе
-    dp.register_message_handler(filters.IDFilter(chat_id=CHAT_ID), cmd_clear, commands=["clear"])
-    dp.register_message_handler(filters.IDFilter(chat_id=CHAT_ID), cmd_banlist, commands=["banlist"])
+    # Command handlers — только в группе предложки
+    dp.register_message_handler(filters.IDFilter(chat_id=CHAT_ID), cmd_help, commands=["help"], chat_type=['group', 'supergroup'])
+    dp.register_message_handler(filters.IDFilter(chat_id=CHAT_ID), cmd_start, commands=["start"], chat_type=['group', 'supergroup'])
+    dp.register_message_handler(filters.IDFilter(chat_id=CHAT_ID), cmd_clear, commands=["clear"], chat_type=['group', 'supergroup'])
+    dp.register_message_handler(filters.IDFilter(chat_id=CHAT_ID), cmd_banlist, commands=["banlist"], chat_type=['group', 'supergroup'])
     dp.register_message_handler(filters.IsReplyFilter(True), filters.IDFilter(chat_id=CHAT_ID), ban_user,
-                                commands=["ban"], is_reply=True)
+                                commands=["ban"], is_reply=True, chat_type=['group', 'supergroup'])
     dp.register_message_handler(filters.IsReplyFilter(True), filters.IDFilter(chat_id=CHAT_ID), unban_user,
-                                commands=["unban"], is_reply=True)
+                                commands=["unban"], is_reply=True, chat_type=['group', 'supergroup'])
+    dp.register_message_handler(filters.IsReplyFilter(True), filters.IDFilter(chat_id=CHAT_ID), cmd_profile,
+                                commands=["profile"], is_reply=True, chat_type=['group', 'supergroup'])
 
-    # ReplyKeyboard button handlers (текстовые сообщения от кнопок)
-    dp.register_message_handler(
-        button_clear,
-        filters.IDFilter(chat_id=CHAT_ID),
-        filters.Text(equals="🗑️ Очистить предложку")
-    )
-    dp.register_message_handler(
-        button_banlist,
-        filters.IDFilter(chat_id=CHAT_ID),
-        filters.Text(equals="📋 Банлист")
-    )
-    dp.register_message_handler(
-        button_help,
-        filters.IDFilter(chat_id=CHAT_ID),
-        filters.Text(equals="ℹ️ Помощь")
-    )
+    # ReplyKeyboard button handlers — регистрируем с is_reply и без, чтобы работало в любом случае
+    dp.register_message_handler(button_clear, filters.IDFilter(chat_id=CHAT_ID), filters.Text(equals="🗑️ Очистить предложку"), is_reply=True)
+    dp.register_message_handler(button_clear, filters.IDFilter(chat_id=CHAT_ID), filters.Text(equals="🗑️ Очистить предложку"), is_reply=False)
+    dp.register_message_handler(button_banlist, filters.IDFilter(chat_id=CHAT_ID), filters.Text(equals="📋 Банлист"), is_reply=True)
+    dp.register_message_handler(button_banlist, filters.IDFilter(chat_id=CHAT_ID), filters.Text(equals="📋 Банлист"), is_reply=False)
+    dp.register_message_handler(button_help, filters.IDFilter(chat_id=CHAT_ID), filters.Text(equals="ℹ️ Помощь"), is_reply=True)
+    dp.register_message_handler(button_help, filters.IDFilter(chat_id=CHAT_ID), filters.Text(equals="ℹ️ Помощь"), is_reply=False)

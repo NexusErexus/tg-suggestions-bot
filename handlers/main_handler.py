@@ -25,8 +25,8 @@ async def answer_banned(user_id):
 
 # Starting message (when '/start' command is entered)
 async def starting(message: types.Message):
+    # В группе — только для админов показываем системное сообщение
     if message.chat.type != 'private':
-        # В группе — только для админов
         if is_admin(message.from_user.id):
             await message.answer("✅ Бот работает исправно")
         try:
@@ -34,14 +34,14 @@ async def starting(message: types.Message):
         except Exception:
             pass
     else:
-        # В личке — приветствие для всех
+        # В личке — обычное приветствие
         await message.answer(TEXT_MESSAGES['start'])
 
 
 # Rules command (when '/rules' command is entered)
 async def cmd_rules(message: types.Message):
-    # # Только в личке
-    # if message.chat.type == 'private':
+    # Только в личке
+    if message.chat.type == 'private':
         await message.answer(TEXT_MESSAGES.get('rules', 'Правила временно недоступны.'))
 
 
@@ -52,8 +52,8 @@ async def unknown_command(message: types.Message):
         await message.reply(
             "❌ Неизвестная команда.\n\n"
             "Доступные команды:\n"
-            "/start — Начать работу\n"
-            "/rules — Правила использования бота"
+            "/start — начать работу\n"
+            "/rules — правила использования"
         )
 
 
@@ -65,6 +65,11 @@ async def reply_to_user(message: types.Message):
     if message.is_command():
         return
 
+    # Игнорируем нажатия кнопок ReplyKeyboard — они обрабатываются отдельными handlers
+    KEYBOARD_BUTTONS = {"🗑️ Очистить предложку", "📋 Банлист", "ℹ️ Помощь"}
+    if message.text and message.text in KEYBOARD_BUTTONS:
+        return
+
     cursor.execute(
         "SELECT tg_user_id FROM message_id WHERE bot_message_id = %s",
         (message.reply_to_message.message_id,)
@@ -72,8 +77,7 @@ async def reply_to_user(message: types.Message):
     row = cursor.fetchone()
 
     if not row:
-        await message.reply("❌ Не удалось определить пользователя")
-        return
+        return  # Это служебное сообщение бота (банлист, очистка и т.д.) — игнорируем
 
     user_id = row[0]
 
@@ -112,15 +116,27 @@ async def forward_handler(message: types.Message):
         user = message.from_user
         user_id = user.id
         full_name = " ".join(filter(None, [user.first_name, user.last_name]))
+        username = user.username  # None если нет username
 
         if is_banned(user_id):
             await answer_banned(user_id)
             return
 
         # Блокируем неизвестные команды (они обрабатываются в unknown_command)
-        # forward_handler вызывается ПОСЛЕ всех command handlers
-        # Если сюда попала команда — значит она неизвестная, просто игнорируем
         if message.is_command():
+            return
+
+        # -------- ФИЛЬТР ТИПОВ --------
+        # Разрешены: текст, фото, видео, альбомы (фото+видео), пересланные из каналов
+        is_allowed = (
+            message.text
+            or message.photo
+            or message.video
+            or message.media_group_id
+            or message.forward_from_chat
+        )
+        if not is_allowed:
+            await message.reply(TEXT_MESSAGES['unsupported_format'])
             return
 
         # Определяем источник (если forwarded из канала)
@@ -138,6 +154,7 @@ async def forward_handler(message: types.Message):
                     'messages': [],
                     'user_id': user_id,
                     'full_name': full_name,
+                    'username': username,
                     'source': source
                 }
 
@@ -153,10 +170,11 @@ async def forward_handler(message: types.Message):
                 messages = group_data['messages']
                 user_id = group_data['user_id']
                 full_name = group_data['full_name']
+                username = group_data['username']
                 source = group_data['source']
 
                 # Отвечаем только на первое сообщение
-                await messages[0].reply(TEXT_MESSAGES['pending'])
+                await messages[0].answer(TEXT_MESSAGES['pending'])
 
                 # Собираем медиа
                 media = []
@@ -173,7 +191,7 @@ async def forward_handler(message: types.Message):
                 # Подпись только на первом медиа
                 text_line = f"👤 <code>{full_name}</code>"
                 if source:
-                    text_line += f"\n📰 Источник: <b>{source}</b>"
+                    text_line += f"\n\n📰 Источник: <b>{source}</b>"
 
                 if media:
                     media[0].caption = (media[0].caption or "") + f"\n\n{text_line}"
@@ -182,15 +200,43 @@ async def forward_handler(message: types.Message):
                 # Отправляем альбом
                 sent_messages = await bot.send_media_group(chat_id=CHAT_ID, media=media)
 
-                # Сохраняем в БД только первое сообщение альбома
+                # send_media_group не поддерживает reply_markup — отправляем кнопки отдельным сообщением
+                keyboard_message = await bot.send_message(
+                    chat_id=CHAT_ID,
+                    text="🎞 Альбом выше",
+                    reply_markup=post_moderation_keyboard(user_id, username)
+                )
+
+                # Сохраняем все медиа альбома с file_id для последующей публикации
+                for i, sent_msg in enumerate(sent_messages):
+                    orig_msg = messages[i] if i < len(messages) else messages[-1]
+                    if orig_msg.photo:
+                        file_id = orig_msg.photo[-1].file_id
+                        media_type = "photo"
+                        caption = orig_msg.caption or ""
+                    elif orig_msg.video:
+                        file_id = orig_msg.video.file_id
+                        media_type = "video"
+                        caption = orig_msg.caption or ""
+                    else:
+                        continue
+
+                    cursor.execute(
+                        """INSERT INTO media_group_messages
+                        (keyboard_message_id, album_message_id, file_id, media_type, caption)
+                        VALUES (%s, %s, %s, %s, %s)""",
+                        (keyboard_message.message_id, sent_msg.message_id, file_id, media_type, caption)
+                    )
+
+                # Сохраняем в БД — привязываем к сообщению с кнопками (оно главное для модерации)
                 utc_time = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
                 cursor.execute(
                     """
                     INSERT INTO message_id
-                    (user_message_id, bot_message_id, datatime, tg_user_id, full_name)
-                    VALUES (%s, %s, %s, %s, %s)
+                    (user_message_id, bot_message_id, datatime, tg_user_id, full_name, username, source)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """,
-                    (messages[0].message_id, sent_messages[0].message_id, utc_time, user_id, full_name)
+                    (messages[0].message_id, keyboard_message.message_id, utc_time, user_id, full_name, username, source)
                 )
                 base.commit()
 
@@ -198,7 +244,7 @@ async def forward_handler(message: types.Message):
 
         # -------- ОБЫЧНЫЕ СООБЩЕНИЯ (не альбом) --------
 
-        await message.reply(TEXT_MESSAGES['pending'])
+        await message.answer(TEXT_MESSAGES['pending'])
 
         text = message.text or message.caption or ""
 
@@ -216,13 +262,8 @@ async def forward_handler(message: types.Message):
                 CHAT_ID,
                 text_user,
                 parse_mode="HTML",
-                reply_markup=post_moderation_keyboard(user_id)
+                reply_markup=post_moderation_keyboard(user_id, username)
             )
-
-        # -------- STICKER --------
-        elif message.sticker:
-            await message.reply(TEXT_MESSAGES['unsupported_format'])
-            return
 
         # -------- MEDIA (одно фото/видео) --------
         else:
@@ -232,7 +273,7 @@ async def forward_handler(message: types.Message):
                 message.message_id,
                 caption=text_user,
                 parse_mode="HTML",
-                reply_markup=post_moderation_keyboard(user_id)
+                reply_markup=post_moderation_keyboard(user_id, username)
             )
 
         # -------- SAVE DB --------
@@ -240,10 +281,10 @@ async def forward_handler(message: types.Message):
         cursor.execute(
             """
             INSERT INTO message_id
-            (user_message_id, bot_message_id, datatime, tg_user_id, full_name)
-            VALUES (%s, %s, %s, %s, %s)
+            (user_message_id, bot_message_id, datatime, tg_user_id, full_name, username, source)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             """,
-            (message.message_id, bot_message.message_id, utc_time, user_id, full_name)
+            (message.message_id, bot_message.message_id, utc_time, user_id, full_name, username, source)
         )
         base.commit()
 
@@ -277,24 +318,25 @@ async def forward_handler(message: types.Message):
 
 # Function which is responsible for editing responses in the chat and edit copied message from bot in private chat
 async def chat_edited_messages(message: types.Message):
-    if not message.reply_to_message.from_user.is_bot or message.is_command():
+    if not message.reply_to_message or not message.reply_to_message.from_user.is_bot or message.is_command():
         return
 
-    # Получаем user_id из сообщения бота на которое отвечает модератор
+    # Находим юзера по посту на который ответил модератор (bot_message_id в группе)
     info = get_user_info(message.reply_to_message.message_id)
     if not info:
-        await message.reply("❌ Не удалось определить пользователя")
-        return
-    user_id, _ = info
+        return  # Это не пост юзера — молча игнорируем
+    user_id, _, _, _ = info
 
     if is_banned(user_id):
         await message.reply(TEXT_MESSAGES['is_banned'])
         return
 
-    # Ищем bot_message_id (сообщение отправленное юзеру) по user_message_id (текущее сообщение модератора)
+    # Находим ID сообщения у юзера по ID ответа модератора в группе
+    # user_message_id — это сообщение модератора в группе
+    # bot_message_id — это копия этого сообщения отправленная юзеру
     cursor.execute(
-        "SELECT bot_message_id FROM message_id WHERE user_message_id = %s",
-        (message.message_id,)
+        "SELECT bot_message_id FROM message_id WHERE user_message_id = %s AND tg_user_id = %s",
+        (message.message_id, user_id)
     )
     row = cursor.fetchone()
     if not row:
@@ -302,7 +344,6 @@ async def chat_edited_messages(message: types.Message):
         return
     to_edit_id = row[0]
 
-    # Defining type of the message
     if message.text:
         try:
             await bot.edit_message_text(
@@ -395,7 +436,7 @@ async def private_edited_messages(message: types.Message):
 def setup_dispatcher(dp: Dispatcher):
     # Command handlers (обрабатываются первыми)
     dp.register_message_handler(starting, commands=["start"])  # Handler for '/start' command
-    dp.register_message_handler(cmd_rules, commands=["rules"])  # Handler for '/rules' command
+    dp.register_message_handler(cmd_rules, commands=["rules"], chat_type='private')  # Handler for '/rules' command
     
     # Unknown command handler (ловит все остальные команды в личке)
     # Должен быть ПОСЛЕ известных команд, но ДО forward_handler

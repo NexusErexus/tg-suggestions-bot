@@ -1,35 +1,25 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 
 
-def post_moderation_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
+def post_moderation_keyboard(user_id: int, username: str = None) -> InlineKeyboardMarkup:
+    rows = [
         [
-            InlineKeyboardButton(
-                text="🚫 Бан",
-                callback_data=f"ban:{user_id}"
-            ),
-            InlineKeyboardButton(
-                text="🧹 Удалить пост",
-                callback_data="delete_post"
-            ),
+            InlineKeyboardButton(text="🚫 Бан", callback_data=f"ban:{user_id}"),
+            InlineKeyboardButton(text="🧹 Удалить пост", callback_data="delete_post"),
         ],
         [
-            InlineKeyboardButton(
-                text="🗑️ Удалить все посты автора",
-                callback_data=f"delete_all:{user_id}"
-            ),
-            InlineKeyboardButton(
-                text="📢 Публикация в канал",
-                callback_data="publish"
-            ),
+            InlineKeyboardButton(text="🗑️ Удалить все посты автора", callback_data=f"delete_all:{user_id}"),
+            InlineKeyboardButton(text="📢 Публикация в канал", callback_data="publish"),
         ],
-        [
-            InlineKeyboardButton(
-                text="👤 Профиль",
-                callback_data=f"profile:{user_id}"
-            ),
-        ],
-    ])
+    ]
+
+    if username:
+        rows.append([
+            InlineKeyboardButton(text="👤 Профиль", url=f"https://t.me/{username}")
+        ])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
 
 # Подтверждение /clear
 def clear_confirm_keyboard() -> InlineKeyboardMarkup:
@@ -45,14 +35,12 @@ def clear_confirm_keyboard() -> InlineKeyboardMarkup:
 def banlist_keyboard(users: list[tuple], page: int, total_pages: int) -> InlineKeyboardMarkup:
     rows = []
 
-    # Кнопки забаненых пользователей
     for user_id, full_name in users:
         label = full_name if full_name else f"ID: {user_id}"
         rows.append([
             InlineKeyboardButton(text=label, callback_data=f"banlist_user:{user_id}")
         ])
 
-    # Навигация
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton(text="◀️", callback_data=f"banlist_page:{page - 1}"))
@@ -61,7 +49,6 @@ def banlist_keyboard(users: list[tuple], page: int, total_pages: int) -> InlineK
     if nav:
         rows.append(nav)
 
-    # Закрыть
     rows.append([
         InlineKeyboardButton(text="❌ Закрыть", callback_data="banlist_close")
     ])
@@ -77,7 +64,6 @@ def unban_confirm_keyboard(user_id: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="❌ Назад", callback_data="banlist_page:0"),
         ]
     ])
-
 
 
 # Меню для админов в группе (ReplyKeyboard)

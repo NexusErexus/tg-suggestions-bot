@@ -24,6 +24,36 @@ try:
     )
     """)
 
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS system_message (
+        id SERIAL PRIMARY KEY,
+        message_id BIGINT UNIQUE NOT NULL
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS media_group_messages (
+        keyboard_message_id BIGINT NOT NULL,
+        album_message_id BIGINT NOT NULL,
+        file_id TEXT,
+        media_type TEXT,
+        caption TEXT
+    )
+    """)
+
+    # Migration: добавляем колонки если их ещё нет
+    cursor.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                           WHERE table_name = 'media_group_messages' AND column_name = 'file_id') THEN
+                ALTER TABLE media_group_messages ADD COLUMN file_id TEXT;
+                ALTER TABLE media_group_messages ADD COLUMN media_type TEXT;
+                ALTER TABLE media_group_messages ADD COLUMN caption TEXT;
+            END IF;
+        END $$;
+    """)
+
     # Migration: добавляем full_name если его ещё нет
     cursor.execute("""
         DO $$
@@ -35,6 +65,14 @@ try:
             IF NOT EXISTS (SELECT 1 FROM information_schema.columns
                            WHERE table_name = 'message_id' AND column_name = 'full_name') THEN
                 ALTER TABLE message_id ADD COLUMN full_name text;
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                           WHERE table_name = 'message_id' AND column_name = 'username') THEN
+                ALTER TABLE message_id ADD COLUMN username text;
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                           WHERE table_name = 'message_id' AND column_name = 'source') THEN
+                ALTER TABLE message_id ADD COLUMN source text;
             END IF;
         END $$;
     """)
