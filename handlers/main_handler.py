@@ -39,10 +39,15 @@ async def starting(message: types.Message):
 
 
 # Rules command (when '/rules' command is entered)
+# async def cmd_rules(message: types.Message):
+#     # Только в личке
+#     if message.chat.type == 'private':
+#         await message.answer(TEXT_MESSAGES.get('rules', 'Правила временно недоступны.'))
 async def cmd_rules(message: types.Message):
-    # Только в личке
     if message.chat.type == 'private':
-        await message.answer(TEXT_MESSAGES.get('rules', 'Правила временно недоступны.'))
+        text = TEXT_MESSAGES.get('rules', 'Правила временно недоступны.')
+        await message.answer(text, parse_mode="HTML")
+
 
 
 # Handler for unknown commands (blocks all commands except /start and /rules for users)

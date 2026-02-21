@@ -495,9 +495,6 @@ async def cmd_start(message: types.Message):
             pass
         
 
-    
-# ─── /profile ─────────────────────────────────────────────────────
-
 async def cmd_profile(message: types.Message):
     if not is_admin(message.from_user.id):
         return
