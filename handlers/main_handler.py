@@ -39,15 +39,10 @@ async def starting(message: types.Message):
 
 
 # Rules command (when '/rules' command is entered)
-# async def cmd_rules(message: types.Message):
-#     # Только в личке
-#     if message.chat.type == 'private':
-#         await message.answer(TEXT_MESSAGES.get('rules', 'Правила временно недоступны.'))
 async def cmd_rules(message: types.Message):
+    # Только в личке
     if message.chat.type == 'private':
-        text = TEXT_MESSAGES.get('rules', 'Правила временно недоступны.')
-        await message.answer(text, parse_mode="HTML")
-
+        await message.answer(TEXT_MESSAGES.get('rules', 'Правила временно недоступны.'))
 
 
 # Handler for unknown commands (blocks all commands except /start and /rules for users)
@@ -196,21 +191,51 @@ async def forward_handler(message: types.Message):
                 # Подпись только на первом медиа
                 text_line = f"👤 <code>{full_name}</code>"
                 if source:
-                    text_line += f"\n\n📰 Источник: <b>{source}</b>"
+                    text_line += f"\n📰 Источник: <b>{source}</b>"
 
-                if media:
-                    media[0].caption = (media[0].caption or "") + f"\n\n{text_line}"
-                    media[0].parse_mode = "HTML"
+                original_caption = media[0].caption or "" if media else ""
+                full_caption = original_caption + f"\n\n{text_line}" if original_caption else text_line
 
-                # Отправляем альбом
-                sent_messages = await bot.send_media_group(chat_id=CHAT_ID, media=media)
-
-                # send_media_group не поддерживает reply_markup — отправляем кнопки отдельным сообщением
-                keyboard_message = await bot.send_message(
-                    chat_id=CHAT_ID,
-                    text="🎞 Альбом выше",
-                    reply_markup=post_moderation_keyboard(user_id, username)
-                )
+                # Если итоговая подпись >1024 — разделяем текст от альбома
+                if len(full_caption) > 1024:
+                    # Убираем оригинальный caption из первого медиа, оставляем только имя+источник
+                    if media:
+                        media[0].caption = text_line
+                        media[0].parse_mode = "HTML"
+                    
+                    # Отправляем альбом
+                    sent_messages = await bot.send_media_group(chat_id=CHAT_ID, media=media)
+                    
+                    # Отправляем ТЕКСТ отдельным сообщением с кнопками
+                    if original_caption:
+                        text_message = await bot.send_message(
+                            CHAT_ID,
+                            original_caption,
+                            parse_mode="HTML",
+                            reply_markup=post_moderation_keyboard(user_id, username)
+                        )
+                    
+                    # Отправляем сообщение "🎞 Альбом выше" с кнопками
+                    keyboard_message = await bot.send_message(
+                        CHAT_ID,
+                        text="🎞 Альбом выше",
+                        reply_markup=post_moderation_keyboard(user_id, username)
+                    )
+                else:
+                    # Подпись влезает — добавляем всё к первому медиа
+                    if media:
+                        media[0].caption = full_caption
+                        media[0].parse_mode = "HTML"
+                    
+                    # Отправляем альбом
+                    sent_messages = await bot.send_media_group(chat_id=CHAT_ID, media=media)
+                    
+                    # Отправляем сообщение с кнопками
+                    keyboard_message = await bot.send_message(
+                        CHAT_ID,
+                        text="🎞 Альбом выше",
+                        reply_markup=post_moderation_keyboard(user_id, username)
+                    )
 
                 # Сохраняем все медиа альбома с file_id для последующей публикации
                 for i, sent_msg in enumerate(sent_messages):
@@ -272,14 +297,101 @@ async def forward_handler(message: types.Message):
 
         # -------- MEDIA (одно фото/видео) --------
         else:
-            bot_message = await bot.copy_message(
-                CHAT_ID,
-                message.chat.id,
-                message.message_id,
-                caption=text_user,
-                parse_mode="HTML",
-                reply_markup=post_moderation_keyboard(user_id, username)
-            )
+            # Если итоговая подпись (текст + имя + источник) >1024 — разделяем на 2 сообщения
+            if len(text_user) > 1024:
+                # Формируем подпись ТОЛЬКО с именем и источником (без текста)
+                caption_only_meta = f"👤 <code>{full_name}</code>"
+                if source:
+                    caption_only_meta += f"\n📰 Источник: <b>{source}</b>"
+                
+                # 1) Отправляем медиа с именем и источником
+                if message.photo:
+                    bot_message = await bot.send_photo(
+                        CHAT_ID,
+                        message.photo[-1].file_id,
+                        caption=caption_only_meta,
+                        parse_mode="HTML",
+                        reply_markup=post_moderation_keyboard(user_id, username)
+                    )
+                elif message.video:
+                    bot_message = await bot.send_video(
+                        CHAT_ID,
+                        message.video.file_id,
+                        caption=caption_only_meta,
+                        parse_mode="HTML",
+                        reply_markup=post_moderation_keyboard(user_id, username)
+                    )
+                else:
+                    # Fallback
+                    bot_message = await bot.copy_message(
+                        CHAT_ID,
+                        message.chat.id,
+                        message.message_id,
+                        reply_markup=post_moderation_keyboard(user_id, username)
+                    )
+                
+                # 2) Отправляем текст отдельным сообщением с кнопками
+                text_message = await bot.send_message(
+                    CHAT_ID,
+                    text,
+                    parse_mode="HTML",
+                    reply_markup=post_moderation_keyboard(user_id, username)
+                )
+                
+                # Сохраняем ОБА сообщения в БД
+                utc_time = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+                
+                # Сохраняем медиа-сообщение
+                cursor.execute(
+                    """
+                    INSERT INTO message_id
+                    (user_message_id, bot_message_id, datatime, tg_user_id, full_name, username, source)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (message.message_id, bot_message.message_id, utc_time, user_id, full_name, username, source)
+                )
+                
+                # Сохраняем текстовое сообщение (связано с тем же user_message_id)
+                cursor.execute(
+                    """
+                    INSERT INTO message_id
+                    (user_message_id, bot_message_id, datatime, tg_user_id, full_name, username, source)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (message.message_id, text_message.message_id, utc_time, user_id, full_name, username, source)
+                )
+                base.commit()
+                
+                # Выходим, чтобы не сохранять ещё раз в блоке -------- SAVE DB --------
+                return
+            
+            else:
+                # Обычная отправка — всё в одном сообщении
+                if message.photo:
+                    bot_message = await bot.send_photo(
+                        CHAT_ID,
+                        message.photo[-1].file_id,
+                        caption=text_user,
+                        parse_mode="HTML",
+                        reply_markup=post_moderation_keyboard(user_id, username)
+                    )
+                elif message.video:
+                    bot_message = await bot.send_video(
+                        CHAT_ID,
+                        message.video.file_id,
+                        caption=text_user,
+                        parse_mode="HTML",
+                        reply_markup=post_moderation_keyboard(user_id, username)
+                    )
+                else:
+                    bot_message = await bot.copy_message(
+                        CHAT_ID,
+                        message.chat.id,
+                        message.message_id,
+                        caption=text_user,
+                        parse_mode="HTML",
+                        reply_markup=post_moderation_keyboard(user_id, username)
+                    )
 
         # -------- SAVE DB --------
         utc_time = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
