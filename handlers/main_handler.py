@@ -3,6 +3,7 @@ from aiogram import types, Dispatcher
 from aiogram.dispatcher import filters
 from datetime import datetime
 import asyncio
+from aiogram.utils.text_decorations import html_decoration
 
 from config import *
 from create_bot import bot, cursor, base
@@ -11,6 +12,20 @@ from handlers.keyboards import post_moderation_keyboard
 
 # Временное хранилище для media groups (альбомов)
 media_groups = {}
+
+# Функция для получения HTML-версии caption
+def get_html_caption(message: types.Message) -> str:
+    """Возвращает HTML-представление caption сообщения."""
+    if message.caption:
+        return html_decoration.unparse(message.caption, message.caption_entities or [])
+    return ""
+
+# Функция для получения HTML-версии текста
+def get_html_text(message: types.Message) -> str:
+    """Возвращает HTML-представление текста сообщения."""
+    if message.text:
+        return message.html_text
+    return ""
 
 # Function which answers to banned users based on availability of ban reason
 async def answer_banned(user_id):
@@ -176,41 +191,63 @@ async def forward_handler(message: types.Message):
                 # Отвечаем только на первое сообщение
                 await messages[0].answer(TEXT_MESSAGES['pending'])
 
-                # Собираем медиа
+                # Собираем медиа с HTML-подписями
                 media = []
                 for msg in messages:
                     if msg.photo:
                         file_id = msg.photo[-1].file_id
-                        caption = msg.caption or ""
-                        media.append(types.InputMediaPhoto(media=file_id, caption=caption))
+                        caption_html = get_html_caption(msg)
+                        media.append(types.InputMediaPhoto(
+                            media=file_id, 
+                            caption=caption_html,
+                            parse_mode="HTML"
+                        ))
                     elif msg.video:
-                        media.append(types.InputMediaVideo(media=msg.video.file_id, caption=msg.caption or ""))
+                        file_id = msg.video.file_id
+                        caption_html = get_html_caption(msg)
+                        media.append(types.InputMediaVideo(
+                            media=file_id, 
+                            caption=caption_html,
+                            parse_mode="HTML"
+                        ))
                     elif msg.document:
-                        media.append(types.InputMediaDocument(media=msg.document.file_id, caption=msg.caption or ""))
+                        file_id = msg.document.file_id
+                        caption_html = get_html_caption(msg)
+                        media.append(types.InputMediaDocument(
+                            media=file_id, 
+                            caption=caption_html,
+                            parse_mode="HTML"
+                        ))
 
-                # Подпись только на первом медиа
-                text_line = f"👤 <code>{full_name}</code>"
+                # Метаданные (автор и источник)
+                metadata_html = f"👤 <code>{full_name}</code>"
                 if source:
-                    text_line += f"\n📰 Источник: <b>{source}</b>"
+                    metadata_html += f"\n📰 Источник: <b>{source}</b>"
 
-                original_caption = media[0].caption or "" if media else ""
-                full_caption = original_caption + f"\n\n{text_line}" if original_caption else text_line
+                # Оригинальная подпись первого медиа
+                original_caption_html = media[0].caption if media else ""
+
+                # Если есть оригинальная подпись, добавляем метаданные
+                if original_caption_html:
+                    full_caption_html = original_caption_html + "\n\n" + metadata_html
+                else:
+                    full_caption_html = metadata_html
 
                 # Если итоговая подпись >1024 — разделяем текст от альбома
-                if len(full_caption) > 1024:
-                    # Убираем оригинальный caption из первого медиа, оставляем только имя+источник
+                if len(full_caption_html) > 1024:
+                    # Убираем оригинальный caption из первого медиа, оставляем только метаданные
                     if media:
-                        media[0].caption = text_line
+                        media[0].caption = metadata_html
                         media[0].parse_mode = "HTML"
                     
                     # Отправляем альбом
                     sent_messages = await bot.send_media_group(chat_id=CHAT_ID, media=media)
                     
                     # Отправляем ТЕКСТ отдельным сообщением с кнопками
-                    if original_caption:
+                    if original_caption_html:
                         text_message = await bot.send_message(
                             CHAT_ID,
-                            original_caption,
+                            original_caption_html,
                             parse_mode="HTML",
                             reply_markup=post_moderation_keyboard(user_id, username)
                         )
@@ -224,7 +261,7 @@ async def forward_handler(message: types.Message):
                 else:
                     # Подпись влезает — добавляем всё к первому медиа
                     if media:
-                        media[0].caption = full_caption
+                        media[0].caption = full_caption_html
                         media[0].parse_mode = "HTML"
                     
                     # Отправляем альбом
@@ -243,11 +280,11 @@ async def forward_handler(message: types.Message):
                     if orig_msg.photo:
                         file_id = orig_msg.photo[-1].file_id
                         media_type = "photo"
-                        caption = orig_msg.caption or ""
+                        caption_html = get_html_caption(orig_msg)
                     elif orig_msg.video:
                         file_id = orig_msg.video.file_id
                         media_type = "video"
-                        caption = orig_msg.caption or ""
+                        caption_html = get_html_caption(orig_msg)
                     else:
                         continue
 
@@ -255,7 +292,7 @@ async def forward_handler(message: types.Message):
                         """INSERT INTO media_group_messages
                         (keyboard_message_id, album_message_id, file_id, media_type, caption)
                         VALUES (%s, %s, %s, %s, %s)""",
-                        (keyboard_message.message_id, sent_msg.message_id, file_id, media_type, caption)
+                        (keyboard_message.message_id, sent_msg.message_id, file_id, media_type, caption_html)
                     )
 
                 # Сохраняем в БД — привязываем к сообщению с кнопками (оно главное для модерации)
@@ -276,40 +313,48 @@ async def forward_handler(message: types.Message):
 
         await message.answer(TEXT_MESSAGES['pending'])
 
-        text = message.text or message.caption or ""
+        # Получаем HTML-версию текста или подписи
+        if message.text:
+            original_html = get_html_text(message)
+        else:
+            original_html = get_html_caption(message)
 
-        # Формируем подпись с источником
-        text_user = text
-        if text_user:
-            text_user += "\n\n"
-        text_user += f"👤 <code>{full_name}</code>"
+        # Метаданные (автор и источник)
+        metadata_html = f"👤 <code>{full_name}</code>"
         if source:
-            text_user += f"\n📰 Источник: <b>{source}</b>"
+            metadata_html += f"\n📰 Источник: <b>{source}</b>"
 
         # -------- TEXT --------
         if message.text and not message.is_command():
+            # Для текстовых сообщений объединяем оригинал и метаданные
+            if original_html:
+                final_html = original_html + "\n\n" + metadata_html
+            else:
+                final_html = metadata_html
+                
             bot_message = await bot.send_message(
                 CHAT_ID,
-                text_user,
+                final_html,
                 parse_mode="HTML",
                 reply_markup=post_moderation_keyboard(user_id, username)
             )
 
         # -------- MEDIA (одно фото/видео) --------
         else:
-            # Если итоговая подпись (текст + имя + источник) >1024 — разделяем на 2 сообщения
-            if len(text_user) > 1024:
-                # Формируем подпись ТОЛЬКО с именем и источником (без текста)
-                caption_only_meta = f"👤 <code>{full_name}</code>"
-                if source:
-                    caption_only_meta += f"\n📰 Источник: <b>{source}</b>"
-                
-                # 1) Отправляем медиа с именем и источником
+            # Проверяем длину итоговой подписи (оригинал + метаданные)
+            if original_html:
+                full_caption_html = original_html + "\n\n" + metadata_html
+            else:
+                full_caption_html = metadata_html
+
+            # Если итоговая подпись >1024 — разделяем на 2 сообщения
+            if len(full_caption_html) > 1024:
+                # 1) Отправляем медиа только с метаданными
                 if message.photo:
                     bot_message = await bot.send_photo(
                         CHAT_ID,
                         message.photo[-1].file_id,
-                        caption=caption_only_meta,
+                        caption=metadata_html,
                         parse_mode="HTML",
                         reply_markup=post_moderation_keyboard(user_id, username)
                     )
@@ -317,26 +362,29 @@ async def forward_handler(message: types.Message):
                     bot_message = await bot.send_video(
                         CHAT_ID,
                         message.video.file_id,
-                        caption=caption_only_meta,
+                        caption=metadata_html,
                         parse_mode="HTML",
                         reply_markup=post_moderation_keyboard(user_id, username)
                     )
                 else:
-                    # Fallback
+                    # Fallback для других типов медиа
                     bot_message = await bot.copy_message(
                         CHAT_ID,
                         message.chat.id,
                         message.message_id,
+                        caption=metadata_html,
+                        parse_mode="HTML",
                         reply_markup=post_moderation_keyboard(user_id, username)
                     )
                 
                 # 2) Отправляем текст отдельным сообщением с кнопками
-                text_message = await bot.send_message(
-                    CHAT_ID,
-                    text,
-                    parse_mode="HTML",
-                    reply_markup=post_moderation_keyboard(user_id, username)
-                )
+                if original_html:
+                    text_message = await bot.send_message(
+                        CHAT_ID,
+                        original_html,
+                        parse_mode="HTML",
+                        reply_markup=post_moderation_keyboard(user_id, username)
+                    )
                 
                 # Сохраняем ОБА сообщения в БД
                 utc_time = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
@@ -352,14 +400,15 @@ async def forward_handler(message: types.Message):
                 )
                 
                 # Сохраняем текстовое сообщение (связано с тем же user_message_id)
-                cursor.execute(
-                    """
-                    INSERT INTO message_id
-                    (user_message_id, bot_message_id, datatime, tg_user_id, full_name, username, source)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    (message.message_id, text_message.message_id, utc_time, user_id, full_name, username, source)
-                )
+                if original_html:
+                    cursor.execute(
+                        """
+                        INSERT INTO message_id
+                        (user_message_id, bot_message_id, datatime, tg_user_id, full_name, username, source)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (message.message_id, text_message.message_id, utc_time, user_id, full_name, username, source)
+                    )
                 base.commit()
                 
                 # Выходим, чтобы не сохранять ещё раз в блоке -------- SAVE DB --------
@@ -371,7 +420,7 @@ async def forward_handler(message: types.Message):
                     bot_message = await bot.send_photo(
                         CHAT_ID,
                         message.photo[-1].file_id,
-                        caption=text_user,
+                        caption=full_caption_html,
                         parse_mode="HTML",
                         reply_markup=post_moderation_keyboard(user_id, username)
                     )
@@ -379,7 +428,7 @@ async def forward_handler(message: types.Message):
                     bot_message = await bot.send_video(
                         CHAT_ID,
                         message.video.file_id,
-                        caption=text_user,
+                        caption=full_caption_html,
                         parse_mode="HTML",
                         reply_markup=post_moderation_keyboard(user_id, username)
                     )
@@ -388,7 +437,7 @@ async def forward_handler(message: types.Message):
                         CHAT_ID,
                         message.chat.id,
                         message.message_id,
-                        caption=text_user,
+                        caption=full_caption_html,
                         parse_mode="HTML",
                         reply_markup=post_moderation_keyboard(user_id, username)
                     )
