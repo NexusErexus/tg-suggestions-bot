@@ -1,15 +1,18 @@
-import aiogram.utils.executor
+import asyncio
 import logging
-# Setting logging to info level
-logging.basicConfig(level=logging.INFO)  # Setting terminal logging to info mode
 
-from create_bot import dp
+logging.basicConfig(level=logging.INFO)
+
+from create_bot import dp, bot
 from handlers import main_handler, admin_handler
 
+# Register routers
+dp.include_routers(main_handler.router, admin_handler.router)
 
-# Registering message handlers
-admin_handler.setup_dispatcher(dp)
-main_handler.setup_dispatcher(dp)
+
+async def main():
+    await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
-    aiogram.utils.executor.start_polling(dp)  # Starting to poll our bot
+    asyncio.run(main())

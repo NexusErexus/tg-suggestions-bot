@@ -2,19 +2,21 @@ import logging
 import psycopg2.extras
 
 from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 
 from config import *
 
-# Creating bot and dispatcher with built-in functions
-bot = Bot(TOKEN)
-dp = Dispatcher(bot)
+# Creating bot and dispatcher
+bot = Bot(TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+dp = Dispatcher()
 db_user = USERNAME
 
-# Creating and accessing database for banning/unbanning users and editing messages, creating routine cleaner function
+# Creating and accessing database
 base = psycopg2.connect(host=HOSTNAME, dbname=DATABASE, user=USERNAME, password=DB_PASS, port=PORT_ID)
 cursor = base.cursor(cursor_factory=psycopg2.extras.DictCursor)
 try:
-    cursor.execute(f'CREATE TABLE IF NOT EXISTS ban_id (user_id bigint PRIMARY KEY, ban_reason text)')
+    cursor.execute('CREATE TABLE IF NOT EXISTS ban_id (user_id bigint PRIMARY KEY, ban_reason text)')
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS message_id (
         user_message_id INT,
@@ -41,7 +43,7 @@ try:
     )
     """)
 
-    # Migration: добавляем колонки если их ещё нет
+    # Migration: РґРѕР±Р°РІР»СЏРµРј РїРѕР»СЏ РµСЃР»Рё РёС… РЅРµС‚
     cursor.execute("""
         DO $$
         BEGIN
@@ -54,7 +56,6 @@ try:
         END $$;
     """)
 
-    # Migration: добавляем full_name если его ещё нет
     cursor.execute("""
         DO $$
         BEGIN
