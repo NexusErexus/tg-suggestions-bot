@@ -86,12 +86,11 @@ KEYBOARD_BUTTONS = {"🗑️ Очистить предложку", "📋 Бан�
 @router.message(
     F.chat.id == int(CHAT_ID),
     F.reply_to_message,
-    F.reply_to_message.from_user.is_bot == True
+    F.reply_to_message.from_user.is_bot == True,
+    ~F.text.startswith('/'),                          # команды обрабатываются отдельно
+    F.text.not_in(KEYBOARD_BUTTONS) | ~F.text         # кнопки ReplyKeyboard обрабатываются отдельно
 )
 async def reply_to_user(message: types.Message):
-    # Игнорируем команды и кнопки ReplyKeyboard
-    if message.text and (message.text.startswith('/') or message.text in KEYBOARD_BUTTONS):
-        return
 
     cursor.execute(
         "SELECT tg_user_id FROM message_id WHERE bot_message_id = %s",
@@ -160,10 +159,7 @@ async def forward_handler(message: types.Message):
             await message.reply(TEXT_MESSAGES['unsupported_format'])
             return
 
-        # Определяем источник (если forwarded из канала)
-        source = None
-        if message.forward_origin and isinstance(message.forward_origin, MessageOriginChannel):
-            source = message.forward_origin.chat.title
+
 
         # -------- MEDIA GROUP (альбом) --------
         if message.media_group_id:
@@ -173,9 +169,7 @@ async def forward_handler(message: types.Message):
                 media_groups[media_group_id] = {
                     'messages': [],
                     'user_id': user_id,
-                    'full_name': full_name,
                     'username': username,
-                    'source': source
                 }
 
             media_groups[media_group_id]['messages'].append(message)
@@ -186,9 +180,7 @@ async def forward_handler(message: types.Message):
                 group_data = media_groups.pop(media_group_id)
                 messages = group_data['messages']
                 user_id = group_data['user_id']
-                full_name = group_data['full_name']
                 username = group_data['username']
-                source = group_data['source']
 
                 await messages[0].answer(TEXT_MESSAGES['pending'])
 
@@ -221,11 +213,6 @@ async def forward_handler(message: types.Message):
                             parse_mode="HTML"
                         ))
 
-                # Метаданные — всегда в сообщении "Альбом выше", не в медиа
-                metadata_html = f"👤 <code>{full_name}</code>"
-                if source:
-                    metadata_html += f"\n📰 Источник: <b>{source}</b>"
-
                 # Отправляем альбом в отдельном try/except —
                 # даже если send_media_group упадёт, keyboard_message всё равно отправится
                 sent_messages = []
@@ -244,14 +231,14 @@ async def forward_handler(message: types.Message):
                     )
                     utc_time_lc = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
                     cursor.execute(
-                        "INSERT INTO message_id (user_message_id, bot_message_id, datatime, tg_user_id, full_name, username, source) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                        (messages[0].message_id, long_msg.message_id, utc_time_lc, user_id, full_name, username, source)
+                        "INSERT INTO message_id (user_message_id, bot_message_id, datatime, tg_user_id, full_name, username) VALUES (%s, %s, %s, %s, %s, %s)",
+                        (messages[0].message_id, long_msg.message_id, utc_time_lc, user_id, full_name, username)
                     )
 
                 # Сообщение с кнопками — отправляется всегда, даже если альбом не ушёл
                 keyboard_message = await bot.send_message(
                     CHAT_ID,
-                    text=f"🎞 Альбом выше\n\n{metadata_html}",
+                    text="🎞 Альбом выше",
                     reply_markup=post_moderation_keyboard(user_id, username)
                 )
 
@@ -276,8 +263,8 @@ async def forward_handler(message: types.Message):
 
                 utc_time = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
                 cursor.execute(
-                    "INSERT INTO message_id (user_message_id, bot_message_id, datatime, tg_user_id, full_name, username, source) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                    (messages[0].message_id, keyboard_message.message_id, utc_time, user_id, full_name, username, source)
+                    "INSERT INTO message_id (user_message_id, bot_message_id, datatime, tg_user_id, full_name, username) VALUES (%s, %s, %s, %s, %s, %s)",
+                    (messages[0].message_id, keyboard_message.message_id, utc_time, user_id, full_name, username)
                 )
                 base.commit()
 
@@ -292,51 +279,39 @@ async def forward_handler(message: types.Message):
         else:
             original_html = get_html_caption(message)
 
-        metadata_html = f"👤 <code>{full_name}</code>"
-        if source:
-            metadata_html += f"\n📰 Источник: <b>{source}</b>"
-
         # TEXT
         if message.text:
-            final_html = (original_html + "\n\n" + metadata_html) if original_html else metadata_html
             bot_message = await bot.send_message(
                 CHAT_ID,
-                final_html,
+                original_html,
                 reply_markup=post_moderation_keyboard(user_id, username)
             )
 
-        # MEDIA (фото/видео)
+        # MEDIA (фото/видео/документ)
         else:
-            full_caption_html = (original_html + "\n\n" + metadata_html) if original_html else metadata_html
-
-            if len(full_caption_html) > 1024:
-                # Медиа с метаданными
+            if len(original_html) > 1024:
+                # Подпись не влезает — медиа без текста, текст отдельным сообщением
                 if message.photo:
                     bot_message = await bot.send_photo(
                         CHAT_ID, message.photo[-1].file_id,
-                        caption=metadata_html,
                         reply_markup=post_moderation_keyboard(user_id, username)
                     )
                 elif message.video:
                     bot_message = await bot.send_video(
                         CHAT_ID, message.video.file_id,
-                        caption=metadata_html,
                         reply_markup=post_moderation_keyboard(user_id, username)
                     )
                 elif message.document:
                     bot_message = await bot.send_document(
                         CHAT_ID, message.document.file_id,
-                        caption=metadata_html,
                         reply_markup=post_moderation_keyboard(user_id, username)
                     )
                 else:
                     bot_message = await bot.copy_message(
                         CHAT_ID, message.chat.id, message.message_id,
-                        caption=metadata_html,
                         reply_markup=post_moderation_keyboard(user_id, username)
                     )
 
-                # Текст отдельно
                 if original_html:
                     text_message = await bot.send_message(
                         CHAT_ID, original_html,
@@ -345,13 +320,13 @@ async def forward_handler(message: types.Message):
 
                 utc_time = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
                 cursor.execute(
-                    "INSERT INTO message_id (user_message_id, bot_message_id, datatime, tg_user_id, full_name, username, source) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                    (message.message_id, bot_message.message_id, utc_time, user_id, full_name, username, source)
+                    "INSERT INTO message_id (user_message_id, bot_message_id, datatime, tg_user_id, full_name, username) VALUES (%s, %s, %s, %s, %s, %s)",
+                    (message.message_id, bot_message.message_id, utc_time, user_id, full_name, username)
                 )
                 if original_html:
                     cursor.execute(
-                        "INSERT INTO message_id (user_message_id, bot_message_id, datatime, tg_user_id, full_name, username, source) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                        (message.message_id, text_message.message_id, utc_time, user_id, full_name, username, source)
+                        "INSERT INTO message_id (user_message_id, bot_message_id, datatime, tg_user_id, full_name, username) VALUES (%s, %s, %s, %s, %s, %s)",
+                        (message.message_id, text_message.message_id, utc_time, user_id, full_name, username)
                     )
                 base.commit()
                 return
@@ -360,33 +335,32 @@ async def forward_handler(message: types.Message):
                 if message.photo:
                     bot_message = await bot.send_photo(
                         CHAT_ID, message.photo[-1].file_id,
-                        caption=full_caption_html,
+                        caption=original_html or None,
                         reply_markup=post_moderation_keyboard(user_id, username)
                     )
                 elif message.video:
                     bot_message = await bot.send_video(
                         CHAT_ID, message.video.file_id,
-                        caption=full_caption_html,
+                        caption=original_html or None,
                         reply_markup=post_moderation_keyboard(user_id, username)
                     )
                 elif message.document:
                     bot_message = await bot.send_document(
                         CHAT_ID, message.document.file_id,
-                        caption=full_caption_html,
+                        caption=original_html or None,
                         reply_markup=post_moderation_keyboard(user_id, username)
                     )
                 else:
                     bot_message = await bot.copy_message(
                         CHAT_ID, message.chat.id, message.message_id,
-                        caption=full_caption_html,
                         reply_markup=post_moderation_keyboard(user_id, username)
                     )
 
         # SAVE DB
         utc_time = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
         cursor.execute(
-            "INSERT INTO message_id (user_message_id, bot_message_id, datatime, tg_user_id, full_name, username, source) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-            (message.message_id, bot_message.message_id, utc_time, user_id, full_name, username, source)
+            "INSERT INTO message_id (user_message_id, bot_message_id, datatime, tg_user_id, full_name, username) VALUES (%s, %s, %s, %s, %s, %s)",
+            (message.message_id, bot_message.message_id, utc_time, user_id, full_name, username)
         )
         base.commit()
 

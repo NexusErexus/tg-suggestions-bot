@@ -12,7 +12,7 @@ from config import *
 router = Router()
 
 ADMIN_IDS = {}
-BANLIST_PAGE_SIZE = 10
+BANLIST_PAGE_SIZE = 5
 
 
 def is_admin(user_id: int) -> bool:
@@ -47,9 +47,8 @@ def get_user_info(bot_message_id: int) -> tuple[int, str | None] | None:
 
 
 # ─── КОМАНДЫ ─────────────────────────────────────────────────────
-
-@router.message(Command("ban"), F.chat.id == int(CHAT_ID), F.reply_to_message)
-async def ban_user(message: types.Message):
+@router.message(Command("profile"), F.chat.id == int(CHAT_ID), F.reply_to_message)
+async def cmd_profile(message: types.Message):
     if not is_admin(message.from_user.id):
         return
 
@@ -64,6 +63,50 @@ async def ban_user(message: types.Message):
         return
     user_id, full_name = info
 
+    try:
+        user = await bot.get_chat(user_id)
+        username = f"@{user.username}" if user.username else None
+        display_name = " ".join(filter(None, [user.first_name, user.last_name])) or full_name or f"ID: {user_id}"
+
+        if username:
+            text = f"👤 <b>{display_name}</b>\n\n<a href='tg://user?id={user_id}'>{username}</a>\n\nID: <code>{user_id}</code>"
+        else:
+            text = f"👤 <a href='tg://user?id={user_id}'><b>{display_name}</b></a>\n\nID: <code>{user_id}</code>"
+
+        await message.reply(text)
+    except Exception:
+        await message.reply(f"❌ Не удалось получить профиль. 👤 {full_name or 'Неизвестен'} ID: <code>{user_id}</code>")
+
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+@router.message(Command("ban"), F.chat.id == int(CHAT_ID), F.reply_to_message)
+async def ban_user(message: types.Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    if not check_replied(message.reply_to_message):
+        await message.reply(TEXT_MESSAGES['reply_error'])
+        return
+
+    bot_message_id = message.reply_to_message.message_id
+    info = get_user_info(bot_message_id)
+    
+    if not info:
+        await message.reply("❌ Не удалось определить пользователя")
+        return
+    
+    user_id, full_name = info
+
+    if user_id == message.from_user.id:
+        await message.reply("🚫 Нельзя забанить самого себя.")
+        return
+
+    if is_admin(user_id):
+        await message.reply("🚫 Нельзя забанить администратора.")
+        return
     try:
         reason = message.text.split(' ', maxsplit=1)[1]
     except Exception:
@@ -253,7 +296,14 @@ async def callback_ban(callback: types.CallbackQuery):
 
     info = get_user_info(callback.message.message_id)
     full_name = info[1] if info else None
+    
+    if user_id == callback.message.from_user.id:
+        await callback.message.reply("🚫 Нельзя забанить самого себя.")
+        return
 
+    if is_admin(user_id):
+        await callback.message.reply("🚫 Нельзя забанить администратора.")
+        return
     cursor.execute(
         "INSERT INTO ban_id (user_id, ban_reason, full_name) VALUES (%s, %s, %s)",
         (user_id, None, full_name)
